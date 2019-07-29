@@ -1,12 +1,15 @@
 use std::thread;
 use std::time::Duration;
 use rand::random;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
+use std::sync::{Arc, Mutex};
+use std::cell::RefCell;
 
 static mut COUNTS: [usize; 128] = [0usize; 128];
 static mut COUNTS_EVENTUAL: [usize; 128] = [0usize; 128];
 static mut GLOBAL_COUNT_EVENTUAL: usize = 0;
+static mut COUNTS_END: [Option<*mut usize>; 32] = [None; 32];
+
 
 pub unsafe fn count_stat() -> usize {
     let threads: Vec<_> = (0..32).map(|i| {
@@ -48,6 +51,38 @@ pub unsafe fn count_stat_eventual() -> usize {
     GLOBAL_COUNT_EVENTUAL
 }
 
+pub unsafe fn count_end() -> usize {
+    let final_count = Arc::new(AtomicUsize::new(0));
+    thread_local!(static COUNT:RefCell<usize> = RefCell::new(0));
+    let threads: Vec<_> = (0..32).map(|i| {
+        let final_count = final_count.clone();
+        thread::spawn(move || {
+            COUNT.with(|f| {
+                COUNTS_END[i] = Some(f.as_ptr());
+            });
+            for _ in 0..100 {
+                thread::sleep(Duration::from_micros(random::<u8>() as u64));
+                COUNT.with(|count| {
+                    *count.borrow_mut() += 1;
+                })
+            }
+            final_count.fetch_add(100, Ordering::SeqCst);
+            COUNTS_END[i] = None;
+        })
+    }).collect();
+    for t in threads {
+        t.join();
+    }
+    let sum = COUNTS_END.iter().fold(0usize, |prev, count| {
+        if let Some(count) = count {
+            prev + **count
+        } else {
+            prev
+        }
+    });
+    sum + final_count.load(Ordering::SeqCst)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -85,6 +120,13 @@ mod tests {
     fn count_stat_eventual() {
         unsafe {
             assert_eq!(super::count_stat_eventual(), 3200);
+        }
+    }
+
+    #[test]
+    fn count_end() {
+        unsafe {
+            assert_eq!(super::count_end(), 3200);
         }
     }
 }
