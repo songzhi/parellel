@@ -2,8 +2,10 @@ use std::thread;
 use std::time::Duration;
 use rand::random;
 use std::sync::atomic::{AtomicBool, Ordering, AtomicUsize};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::cell::RefCell;
+
+pub mod count_lim;
 
 static mut COUNTS: [usize; 128] = [0usize; 128];
 static mut COUNTS_EVENTUAL: [usize; 128] = [0usize; 128];
