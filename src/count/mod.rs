@@ -1,3 +1,53 @@
+use std::thread;
+use std::time::Duration;
+use rand::random;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+static mut COUNTS: [usize; 128] = [0usize; 128];
+static mut COUNTS_EVENTUAL: [usize; 128] = [0usize; 128];
+static mut GLOBAL_COUNT_EVENTUAL: usize = 0;
+
+pub unsafe fn count_stat() -> usize {
+    let threads: Vec<_> = (0..32).map(|i| {
+        thread::spawn(move || {
+            for _ in 0..100 {
+                thread::sleep(Duration::from_micros(random::<u8>() as u64));
+                COUNTS[i] += 1;
+            }
+        })
+    }).collect();
+    for t in threads {
+        t.join();
+    }
+    COUNTS[..32].iter().sum()
+}
+
+pub unsafe fn count_stat_eventual() -> usize {
+    let threads: Vec<_> = (0..32).map(|i| {
+        thread::spawn(move || {
+            for _ in 0..100 {
+                thread::sleep(Duration::from_micros(random::<u8>() as u64));
+                COUNTS_EVENTUAL[i] += 1;
+            }
+        })
+    }).collect();
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_flag2 = stop_flag.clone();
+    let eventual = thread::spawn(move || {
+        while !stop_flag2.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+            GLOBAL_COUNT_EVENTUAL = COUNTS[..32].iter().sum();
+        }
+    });
+    for t in threads {
+        t.join();
+    }
+    stop_flag.store(true, Ordering::SeqCst);
+    eventual.join();
+    GLOBAL_COUNT_EVENTUAL
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
@@ -9,19 +59,32 @@ mod tests {
     #[test]
     fn count_atomic() {
         let counter = Arc::new(AtomicUsize::new(0));
-        let mut threads = Vec::new();
-        for _ in 0..10 {
+        let threads: Vec<_> = (0..10).map(|_| {
             let counter = counter.clone();
-            threads.push(thread::spawn(move || {
+            thread::spawn(move || {
                 for _ in 0..100 {
                     thread::sleep(Duration::from_micros(random::<u8>() as u64));
                     counter.fetch_add(1, Ordering::SeqCst);
                 }
-            }))
-        }
+            })
+        }).collect();
         for t in threads {
             t.join();
         }
         assert_eq!(counter.load(Ordering::SeqCst), 1000);
+    }
+
+    #[test]
+    fn count_stat() {
+        unsafe {
+            assert_eq!(super::count_stat(), 3200);
+        }
+    }
+
+    #[test]
+    fn count_stat_eventual() {
+        unsafe {
+            assert_eq!(super::count_stat_eventual(), 3200);
+        }
     }
 }
