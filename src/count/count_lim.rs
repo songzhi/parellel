@@ -53,42 +53,6 @@ impl GlobalData {
             self.count -= *counter;
         });
     }
-    pub fn add_count(&mut self, delta: usize) -> bool {
-        let added = COUNTER_WITH_MAX.with(|data| -> bool {
-            let mut data = data.borrow_mut();
-            let (counter, counter_max) = data.deref_mut();
-            if *counter_max - *counter >= delta {
-                *counter += delta;
-                true
-            } else { false }
-        });
-        if added { return true; }
-        self.globalize_count();
-        if self.count_max - self.count - self.reserve > delta {
-            return false;
-        }
-        self.count += delta;
-        self.balance_count();
-        true
-    }
-    pub fn sub_count(&mut self, delta: usize) -> bool {
-        let subed = COUNTER_WITH_MAX.with(|data| -> bool {
-            let mut data = data.borrow_mut();
-            let (counter, _) = data.deref_mut();
-            if *counter >= delta {
-                *counter -= delta;
-                true
-            } else { false }
-        });
-        if subed { return true; }
-        self.globalize_count();
-        if self.count < delta {
-            return false;
-        }
-        self.count -= delta;
-        self.balance_count();
-        true
-    }
     pub unsafe fn read_count(&self) -> usize {
         let mut sum = self.count;
         sum += COUNTER_PTR.iter().fold(0usize, |prev, count| {
@@ -102,4 +66,89 @@ impl GlobalData {
     }
 }
 
-pub type GlobalDataInstance = Arc<RefCell<Mutex<GlobalData>>>;
+pub type GlobalDataInstance = Arc<Mutex<GlobalData>>;
+
+pub fn add_count(global_data: &GlobalDataInstance, delta: usize) -> bool {
+    let added = COUNTER_WITH_MAX.with(|data| -> bool {
+        let mut data = data.borrow_mut();
+        let (counter, counter_max) = data.deref_mut();
+        if *counter_max - *counter >= delta {
+            *counter += delta;
+            true
+        } else { false }
+    });
+    if added { return true; }
+    let mut global_data = global_data.lock().unwrap();
+    global_data.globalize_count();
+    if global_data.count_max - global_data.count - global_data.reserve < delta {
+        return false;
+    }
+    global_data.count += delta;
+    global_data.balance_count();
+    true
+}
+
+pub fn sub_count(global_data: &GlobalDataInstance, delta: usize) -> bool {
+    let subed = COUNTER_WITH_MAX.with(|data| -> bool {
+        let mut data = data.borrow_mut();
+        let (counter, _) = data.deref_mut();
+        if *counter >= delta {
+            *counter -= delta;
+            true
+        } else { false }
+    });
+    if subed { return true; }
+    let mut global_data = global_data.lock().unwrap();
+    global_data.globalize_count();
+    if global_data.count < delta {
+        return false;
+    }
+    global_data.count -= delta;
+    global_data.balance_count();
+    true
+}
+
+pub unsafe fn count_register_thread(global_data: &GlobalDataInstance, index: usize) {
+    let _ = global_data.lock().unwrap();
+    COUNTER_WITH_MAX.with(|data| {
+        let mut data = data.borrow_mut();
+        let (counter, _) = data.deref_mut();
+        COUNTER_PTR[index] = Some(counter as *mut usize);
+    });
+    ACTIVE_THREADS_COUNT.fetch_add(1, Ordering::SeqCst);
+}
+
+pub unsafe fn count_unregister_thread(global_data: &GlobalDataInstance, index: usize) {
+    let mut global_data = global_data.lock().unwrap();
+    global_data.globalize_count();
+    COUNTER_PTR[index] = None;
+    ACTIVE_THREADS_COUNT.fetch_sub(1, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use rand::random;
+
+    #[test]
+    fn main() {
+        let global_data = Arc::new(Mutex::new(GlobalData::default()));
+        let threads: Vec<_> = (0..32).map(|i| {
+            let global_data = global_data.clone();
+            thread::spawn(move || {
+                unsafe { count_register_thread(&global_data, i); }
+                for _ in 0..100 {
+                    thread::sleep(Duration::from_micros(random::<u8>() as u64));
+                    add_count(&global_data, 1);
+                }
+                unsafe { count_unregister_thread(&global_data, i); }
+            })
+        }).collect();
+        for t in threads {
+            t.join();
+        }
+        let global_data = global_data.lock().unwrap();
+        assert_eq!(unsafe { global_data.read_count() }, 3200);
+    }
+}
