@@ -1,8 +1,7 @@
-use std::sync::atomic::{Ordering, AtomicUsize};
-use std::sync::{Arc, Mutex};
 use std::cell::RefCell;
-use std::thread;
 use std::ops::DerefMut;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 // 每线程变量counter和counter_max各自对应线程的本地计数和计数上限.
 thread_local!(static COUNTER_WITH_MAX: RefCell<(usize,usize)> = RefCell::new((0,0)));
@@ -75,9 +74,13 @@ pub fn add_count(global_data: &GlobalDataInstance, delta: usize) -> bool {
         if *counter_max - *counter >= delta {
             *counter += delta;
             true
-        } else { false }
+        } else {
+            false
+        }
     });
-    if added { return true; }
+    if added {
+        return true;
+    }
     let mut global_data = global_data.lock().unwrap();
     global_data.globalize_count();
     if global_data.count_max - global_data.count - global_data.reserve < delta {
@@ -95,9 +98,13 @@ pub fn sub_count(global_data: &GlobalDataInstance, delta: usize) -> bool {
         if *counter >= delta {
             *counter -= delta;
             true
-        } else { false }
+        } else {
+            false
+        }
     });
-    if subed { return true; }
+    if subed {
+        return true;
+    }
     let mut global_data = global_data.lock().unwrap();
     global_data.globalize_count();
     if global_data.count < delta {
@@ -128,25 +135,31 @@ pub unsafe fn count_unregister_thread(global_data: &GlobalDataInstance, index: u
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::thread;
     use std::time::Duration;
-    use rand::random;
 
     #[test]
     fn main() {
         let global_data = Arc::new(Mutex::new(GlobalData::default()));
-        let threads: Vec<_> = (0..32).map(|i| {
-            let global_data = global_data.clone();
-            thread::spawn(move || {
-                unsafe { count_register_thread(&global_data, i); }
-                for _ in 0..100 {
-                    thread::sleep(Duration::from_micros(random::<u8>() as u64));
-                    add_count(&global_data, 1);
-                }
-                unsafe { count_unregister_thread(&global_data, i); }
+        let threads: Vec<_> = (0..32)
+            .map(|i| {
+                let global_data = global_data.clone();
+                thread::spawn(move || {
+                    unsafe {
+                        count_register_thread(&global_data, i);
+                    }
+                    for _ in 0..100 {
+                        thread::sleep(Duration::from_micros(fastrand::u64(5..15)));
+                        add_count(&global_data, 1);
+                    }
+                    unsafe {
+                        count_unregister_thread(&global_data, i);
+                    }
+                })
             })
-        }).collect();
+            .collect();
         for t in threads {
-            t.join();
+            t.join().ok();
         }
         let global_data = global_data.lock().unwrap();
         assert_eq!(unsafe { global_data.read_count() }, 3200);
